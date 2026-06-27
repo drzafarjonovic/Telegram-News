@@ -54,6 +54,8 @@ class Config:
 
     # Ma'lumotlar bazasi
     database_url: str = os.getenv("DATABASE_URL", "")
+    # Postgres schema (boshqa loyiha bilan bitta Supabase'ni baham ko'rish uchun)
+    db_schema: str = os.getenv("DB_SCHEMA", "tgnews").strip() or "tgnews"
 
     # AI
     ai_provider: str = os.getenv("AI_PROVIDER", "groq").strip().lower()
