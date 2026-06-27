@@ -85,6 +85,7 @@ HELP = (
     "/list — kanallaringiz ro'yxati\n"
     "/remove — kanalni o'chirish\n"
     "/time — digest vaqtini sozlash\n"
+    "/menu — boshqaruv menyusi (qiziqishlar, rejim, tarix)\n"
     "/help — yordam\n\n"
     "💡 Shunchaki kanal linkini yuborsangiz ham qo'shiladi.\n"
     "⚠️ Faqat <b>ochiq</b> kanallar qo'llab-quvvatlanadi."
@@ -318,6 +319,20 @@ async def receive_daily_times(message: Message, state: FSMContext) -> None:
 
 
 # ============================================================
+#  FAZA 2 — Inline menyu (/menu)
+# ============================================================
+MENU_TEXT = "⚙️ <b>Boshqaruv menyusi</b>\nKerakli bo'limni tanlang:"
+
+
+@user_router.message(Command("menu"))
+@user_router.message(F.text == "⚙️ Menyu")
+async def cmd_menu(message: Message) -> None:
+    await message.answer(
+        MENU_TEXT, parse_mode=ParseMode.HTML, reply_markup=kb.main_menu_inline()
+    )
+
+
+# ============================================================
 #  Linkka o'xshash matnni avtomatik qabul qilish (fallback)
 # ============================================================
 @user_router.message(F.text, StateFilter(None))
@@ -330,4 +345,173 @@ async def maybe_link(message: Message, state: FSMContext) -> None:
         await message.answer(
             "🤔 Tushunmadim. Kanal linkini yuboring yoki tugmalardan foydalaning.",
             reply_markup=kb.MAIN_MENU,
+        )
+
+
+
+# ============================================================
+#  FAZA 2 — Inline menyu callbacklari
+# ============================================================
+@user_router.callback_query(F.data == "m:menu")
+async def cb_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.message.edit_text(
+        MENU_TEXT, parse_mode=ParseMode.HTML, reply_markup=kb.main_menu_inline()
+    )
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "m:add")
+async def cb_menu_add(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AddChannel.waiting_link)
+    await callback.message.answer(
+        "📥 Kanal linkini yuboring (masalan <code>@kanal</code>):",
+        parse_mode=ParseMode.HTML,
+    )
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "m:channels")
+async def cb_menu_channels(callback: CallbackQuery) -> None:
+    channels = await repo.get_user_channels(callback.from_user.id)
+    if not channels:
+        await callback.message.edit_text(
+            "📭 Hali kanal qo'shmagansiz.",
+            reply_markup=kb.back_menu(),
+        )
+    else:
+        await callback.message.edit_text(
+            f"📋 <b>Kanallaringiz ({len(channels)} ta)</b>\nO'chirish uchun bosing:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb.channels_keyboard(channels),
+        )
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "m:time")
+async def cb_menu_time(callback: CallbackQuery) -> None:
+    schedule = await repo.get_schedule(callback.from_user.id)
+    await callback.message.edit_text(
+        f"⏰ <b>Digest vaqti</b>\n\nJoriy: {_format_schedule(schedule)}\n\nYangi oraliqni tanlang:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb.time_keyboard(),
+    )
+    await callback.answer()
+
+
+@user_router.callback_query(F.data == "m:help")
+async def cb_menu_help(callback: CallbackQuery) -> None:
+    await callback.message.edit_text(
+        HELP, parse_mode=ParseMode.HTML, reply_markup=kb.back_menu()
+    )
+    await callback.answer()
+
+
+# ---------- Qiziqishlar (#7) ----------
+async def _show_interests(callback: CallbackQuery) -> None:
+    user = await repo.get_user(callback.from_user.id)
+    selected = list(user["interests"]) if user and user["interests"] else []
+    note = (
+        "Hammasi (filtrlanmaydi)" if not selected else ", ".join(selected)
+    )
+    await callback.message.edit_text(
+        "🎯 <b>Qiziqishlar</b>\n\n"
+        "Faqat sizni qiziqtirgan kategoriyalarni tanlang. "
+        "Hech narsa tanlanmasa — barcha yangiliklar keladi.\n\n"
+        f"Joriy: <b>{note}</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb.interests_keyboard(selected),
+    )
+
+
+@user_router.callback_query(F.data == "m:interests")
+async def cb_menu_interests(callback: CallbackQuery) -> None:
+    await _show_interests(callback)
+    await callback.answer()
+
+
+@user_router.callback_query(F.data.startswith("int:"))
+async def cb_toggle_interest(callback: CallbackQuery) -> None:
+    value = callback.data.split(":", 1)[1]
+    user = await repo.get_user(callback.from_user.id)
+    selected = list(user["interests"]) if user and user["interests"] else []
+
+    if value == "clear":
+        selected = []
+    elif value in selected:
+        selected.remove(value)
+    else:
+        selected.append(value)
+
+    await repo.set_interests(callback.from_user.id, selected)
+    await repo.log_audit(
+        "set_interests", actor_id=callback.from_user.id,
+        details={"interests": selected},
+    )
+    await _show_interests(callback)
+    await callback.answer()
+
+
+# ---------- Muhimlik rejimi (#8) ----------
+async def _show_mode(callback: CallbackQuery) -> None:
+    user = await repo.get_user(callback.from_user.id)
+    current = (user["importance_min"] if user else 1) or 1
+    await callback.message.edit_text(
+        "🔎 <b>Yangilik rejimi</b>\n\n"
+        "📋 Hammasi — barcha yangiliklar\n"
+        "⭐ Muhimlari — faqat muhim (3+)\n"
+        "🔥 Eng muhimlari — faqat eng muhim (4+)\n",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb.mode_keyboard(current),
+    )
+
+
+@user_router.callback_query(F.data == "m:mode")
+async def cb_menu_mode(callback: CallbackQuery) -> None:
+    await _show_mode(callback)
+    await callback.answer()
+
+
+@user_router.callback_query(F.data.startswith("mode:"))
+async def cb_set_mode(callback: CallbackQuery) -> None:
+    value = int(callback.data.split(":")[1])
+    await repo.set_importance_min(callback.from_user.id, value)
+    await repo.log_audit(
+        "set_mode", actor_id=callback.from_user.id, details={"importance_min": value}
+    )
+    await _show_mode(callback)
+    await callback.answer("Saqlandi ✅")
+
+
+# ---------- Digest tarixi (#10) ----------
+@user_router.callback_query(F.data == "m:history")
+async def cb_menu_history(callback: CallbackQuery) -> None:
+    digests = await repo.get_user_digests(callback.from_user.id, limit=10)
+    if not digests:
+        await callback.message.edit_text(
+            "📭 Hali digest tarixi yo'q (oxirgi 7 kun).",
+            reply_markup=kb.back_menu(),
+        )
+    else:
+        await callback.message.edit_text(
+            "📚 <b>Digest tarixi</b> (oxirgi 7 kun)\nKo'rish uchun tanlang:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb.history_keyboard(digests),
+        )
+    await callback.answer()
+
+
+@user_router.callback_query(F.data.startswith("hist:"))
+async def cb_show_history(callback: CallbackQuery) -> None:
+    from app.digest import split_for_telegram
+
+    digest_id = int(callback.data.split(":")[1])
+    row = await repo.get_digest(digest_id, callback.from_user.id)
+    if not row or not row["content"]:
+        await callback.answer("Topilmadi", show_alert=True)
+        return
+    await callback.answer()
+    for part in split_for_telegram(row["content"]):
+        await callback.message.answer(
+            part, parse_mode=ParseMode.HTML, disable_web_page_preview=True
         )

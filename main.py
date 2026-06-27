@@ -40,6 +40,7 @@ async def _set_commands(bot: Bot) -> None:
             BotCommand(command="list", description="Kanallarim ro'yxati"),
             BotCommand(command="remove", description="Kanalni o'chirish"),
             BotCommand(command="time", description="Digest vaqtini sozlash"),
+            BotCommand(command="menu", description="Boshqaruv menyusi"),
             BotCommand(command="help", description="Yordam"),
         ]
     )

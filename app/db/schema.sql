@@ -140,3 +140,13 @@ CREATE INDEX IF NOT EXISTS idx_posts_story ON posts (story_id);
 ALTER TABLE channels ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ;
 ALTER TABLE channels ADD COLUMN IF NOT EXISTS health_status   TEXT NOT NULL DEFAULT 'ok';
 ALTER TABLE channels ADD COLUMN IF NOT EXISTS last_error      TEXT;
+
+
+
+-- ============================================================
+--  FAZA 2 — Qiziqishlar profili va muhimlik rejimi
+-- ============================================================
+-- interests: foydalanuvchi tanlagan kategoriyalar (bo'sh = hammasi)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS interests TEXT[] NOT NULL DEFAULT '{}';
+-- importance_min: digestga tushadigan minimal muhimlik (1=hammasi, 3=muhim, 4=eng muhim)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS importance_min SMALLINT NOT NULL DEFAULT 1;
