@@ -46,6 +46,9 @@ class Database:
             max_size=10,
             ssl=ssl_ctx,
             command_timeout=60,
+            # Supabase pooler (PgBouncer) bilan ishlash uchun prepared statement
+            # keshini o'chiramiz — aks holda "prepared statement" xatolari chiqishi mumkin.
+            statement_cache_size=0,
             server_settings={"search_path": f"{self.schema}, public"},
         )
         logger.info("PostgreSQL puliga ulanildi (schema: %s).", self.schema)

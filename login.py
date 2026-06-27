@@ -1,39 +1,56 @@
 """
 Telethon StringSession yaratish skripti (bir martalik).
 
-Buni LOKAL kompyuteringizda ishga tushiring:
-    python login.py
+Bu skript MUSTAQIL ishlaydi — faqat `telethon` kerak (config/.env shart emas).
+Shuning uchun uni telefonda Pydroid3'da ham bemalol ishga tushirish mumkin.
 
-Telefon raqami, Telegram kodi (va kerak bo'lsa 2FA paroli) so'raladi.
-Natijada chiqqan uzun satrni STRING_SESSION sifatida .env yoki
-Railway Variables'ga qo'ying. Bu satrni HECH KIMGA bermang!
+ISHGA TUSHIRISH:
+    1) Pydroid3'da:  pip install telethon
+    2) Bu faylni oching va "Run" (▶) tugmasini bosing.
+    3) So'ralganda API_ID, API_HASH, telefon raqami va Telegram kodini kiriting.
+    4) Chiqqan uzun STRING_SESSION satrini nusxalab, Railway "Variables" ga
+       STRING_SESSION sifatida qo'ying.
+
+⚠️  STRING_SESSION akkauntingizga to'liq kirish beradi — uni hech kimga bermang!
 """
 import asyncio
 
-from telethon import TelegramClient
-from telethon.sessions import StringSession
-
-from config import config
+try:
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+except ImportError:
+    raise SystemExit(
+        "❌ Telethon o'rnatilmagan. Avval shuni bajaring:\n   pip install telethon"
+    )
 
 
 async def main() -> None:
-    if not config.api_id or not config.api_hash:
-        print("❌ Avval .env faylga API_ID va API_HASH ni yozing "
-              "(my.telegram.org dan oling).")
+    print("=" * 60)
+    print("  Telegram StringSession yaratish")
+    print("=" * 60)
+    print("API_ID va API_HASH'ni https://my.telegram.org dan oling.\n")
+
+    api_id_raw = input("API_ID (raqam): ").strip()
+    if not api_id_raw.isdigit():
+        print("❌ API_ID raqam bo'lishi kerak.")
+        return
+    api_id = int(api_id_raw)
+    api_hash = input("API_HASH: ").strip()
+
+    if not api_hash:
+        print("❌ API_HASH bo'sh bo'lishi mumkin emas.")
         return
 
-    print("📱 Telegram akkauntingizga kirish...\n")
-    async with TelegramClient(
-        StringSession(), config.api_id, config.api_hash
-    ) as client:
-        session_str = client.session.save()
+    print("\n📱 Telegram'ga kirish (telefon raqami +998... ko'rinishida)...\n")
+    async with TelegramClient(StringSession(), api_id, api_hash) as client:
         me = await client.get_me()
+        session_str = client.session.save()
         print("\n" + "=" * 60)
         print(f"✅ Kirildi: {me.first_name} (@{me.username})")
         print("=" * 60)
-        print("\nQuyidagi STRING_SESSION'ni .env / Railway Variables'ga qo'ying:\n")
+        print("\n👇 Quyidagi STRING_SESSION'ni Railway Variables'ga qo'ying:\n")
         print(session_str)
-        print("\n⚠️  Bu satrni hech kimga bermang — u akkauntingizga to'liq kirish beradi!")
+        print("\n⚠️  Bu satrni hech kimga bermang!")
 
 
 if __name__ == "__main__":
