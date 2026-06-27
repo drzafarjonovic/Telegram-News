@@ -1,0 +1,20 @@
+# Telegram bot framework (foydalanuvchilar bilan muloqot)
+aiogram==3.13.1
+
+# Telegram userbot (ochiq kanallarni o'qish uchun shaxsiy akkaunt)
+telethon==1.36.0
+
+# PostgreSQL (Supabase) asinxron drayver
+asyncpg==0.29.0
+
+# AI provayderlar (OpenAI-compatible: Groq, OpenAI, Gemini)
+openai==1.54.4
+
+# Vaqt jadvali (digest yuborish)
+APScheduler==3.10.4
+
+# Vaqt mintaqalari (Asia/Tashkent)
+tzdata==2024.2
+
+# Konfiguratsiya (.env fayldan o'qish)
+python-dotenv==1.0.1

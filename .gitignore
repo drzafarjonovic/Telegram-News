@@ -1,0 +1,31 @@
+# Maxfiy sozlamalar
+.env
+
+# Telethon sessiya fayllari (akkaunt kirishi — HECH QACHON commit qilinmasin!)
+*.session
+*.session-journal
+session_string.txt
+
+# Ma'lumotlar bazasi
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.Python
+build/
+dist/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.log
