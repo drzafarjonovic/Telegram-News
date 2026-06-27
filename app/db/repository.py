@@ -605,40 +605,85 @@ async def increment_story(story_id: int, posted_at) -> None:
         )
 
 
-async def get_stories_for_user(user_id: int, since, until):
+async def get_stories_for_user(
+    user_id: int,
+    since,
+    until,
+    importance_min: int = 1,
+    interests: list[str] | None = None,
+):
     """
     Foydalanuvchi obuna bo'lgan kanallardagi postlardan tashkil topgan,
     [since, until] oralig'idagi storylar — manbalari (sources) bilan.
+
+    Filtrlar (Faza 2):
+      • importance_min — minimal muhimlik bali
+      • interests — kategoriyalar ro'yxati (bo'sh = barcha kategoriyalar)
+
     AI chaqirilmaydi; tayyor cache qaytariladi.
+    """
+    interests = interests or []
+    base = """
+        SELECT st.id, st.summary, st.category, st.importance, st.sentiment,
+               array_agg(DISTINCT COALESCE('@' || c.username, c.title)) AS sources
+        FROM stories st
+        JOIN posts p ON p.story_id = st.id
+        JOIN subscriptions s ON s.channel_id = p.channel_id
+        JOIN channels c ON c.id = p.channel_id
+        WHERE s.user_id = $1 AND p.posted_at <= $2
+          AND st.importance >= $3
+          AND (cardinality($4::text[]) = 0 OR st.category = ANY($4))
+          {since_clause}
+        GROUP BY st.id
+        ORDER BY st.importance DESC, st.first_posted_at
     """
     async with db.acquire() as conn:
         if since is None:
             return await conn.fetch(
-                """SELECT st.id, st.summary, st.category, st.importance, st.sentiment,
-                          array_agg(DISTINCT COALESCE('@' || c.username, c.title)) AS sources
-                   FROM stories st
-                   JOIN posts p ON p.story_id = st.id
-                   JOIN subscriptions s ON s.channel_id = p.channel_id
-                   JOIN channels c ON c.id = p.channel_id
-                   WHERE s.user_id = $1 AND p.posted_at <= $2
-                   GROUP BY st.id
-                   ORDER BY st.importance DESC, st.first_posted_at""",
-                user_id,
-                until,
+                base.format(since_clause=""),
+                user_id, until, importance_min, interests,
             )
         return await conn.fetch(
-            """SELECT st.id, st.summary, st.category, st.importance, st.sentiment,
-                      array_agg(DISTINCT COALESCE('@' || c.username, c.title)) AS sources
-               FROM stories st
-               JOIN posts p ON p.story_id = st.id
-               JOIN subscriptions s ON s.channel_id = p.channel_id
-               JOIN channels c ON c.id = p.channel_id
-               WHERE s.user_id = $1 AND p.posted_at > $2 AND p.posted_at <= $3
-               GROUP BY st.id
-               ORDER BY st.importance DESC, st.first_posted_at""",
+            base.format(since_clause="AND p.posted_at > $5"),
+            user_id, until, importance_min, interests, since,
+        )
+
+
+async def set_interests(user_id: int, interests: list[str]) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET interests = $2 WHERE id = $1", user_id, interests
+        )
+
+
+async def set_importance_min(user_id: int, value: int) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET importance_min = $2 WHERE id = $1", user_id, value
+        )
+
+
+async def get_user_digests(user_id: int, limit: int = 10):
+    """Oxirgi digestlar (tarix uchun) — id, sana, post soni."""
+    async with db.acquire() as conn:
+        return await conn.fetch(
+            """SELECT id, period_start, period_end, post_count, sent_at
+               FROM digests
+               WHERE user_id = $1 AND sent_at >= now() - interval '7 days'
+               ORDER BY sent_at DESC
+               LIMIT $2""",
             user_id,
-            since,
-            until,
+            limit,
+        )
+
+
+async def get_digest(digest_id: int, user_id: int):
+    """Bitta digestning to'liq matni (faqat egasiga)."""
+    async with db.acquire() as conn:
+        return await conn.fetchrow(
+            "SELECT * FROM digests WHERE id = $1 AND user_id = $2",
+            digest_id,
+            user_id,
         )
 
 

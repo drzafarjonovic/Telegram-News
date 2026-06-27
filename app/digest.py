@@ -61,9 +61,17 @@ async def build_digest(
 ) -> Optional[dict]:
     """
     Foydalanuvchi uchun cache'langan storylardan digest tayyorlaydi.
+    Qiziqishlar (kategoriya) va muhimlik rejimi bo'yicha filtrlanadi.
     Qaytaradi: {"content": str, "post_count": int} yoki None (yangilik yo'q).
     """
-    stories = await repo.get_stories_for_user(user_id, since, until)
+    # Foydalanuvchi filtrlari (Faza 2)
+    user = await repo.get_user(user_id)
+    importance_min = (user["importance_min"] if user else 1) or 1
+    interests = list(user["interests"]) if user and user["interests"] else []
+
+    stories = await repo.get_stories_for_user(
+        user_id, since, until, importance_min=importance_min, interests=interests
+    )
     if not stories:
         return None  # yangilik yo'q -> jim qolamiz
 
