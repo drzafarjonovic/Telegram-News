@@ -106,3 +106,37 @@ CREATE TABLE IF NOT EXISTS broadcasts (
     failed       INTEGER NOT NULL DEFAULT 0,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+
+
+-- ============================================================
+--  FAZA 1 — Cache pipeline (stories), dedup, health check
+-- ============================================================
+
+-- "Story" = bir xil yangilik (turli kanallardagi dublikatlar birlashtirilgan).
+-- AI har story uchun FAQAT bir marta ishlaydi; natija shu yerda cache'lanadi.
+CREATE TABLE IF NOT EXISTS stories (
+    id                      BIGSERIAL PRIMARY KEY,
+    summary                 TEXT,                          -- AI tayyorlagan mazmun
+    category                TEXT,                          -- masalan: Iqtisod, Sport...
+    importance              SMALLINT NOT NULL DEFAULT 3,   -- 1..5 (muhimlik bali)
+    sentiment               TEXT,                          -- positive | negative | neutral
+    lang                    TEXT,
+    keywords                TEXT,                          -- dedup uchun kalit so'zlar (Jaccard)
+    first_posted_at         TIMESTAMPTZ,
+    post_count              INTEGER NOT NULL DEFAULT 1,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_stories_created ON stories (created_at);
+CREATE INDEX IF NOT EXISTS idx_stories_importance ON stories (importance DESC);
+
+-- posts jadvaliga cache pipeline ustunlari (idempotent)
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS processed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS story_id  BIGINT;
+CREATE INDEX IF NOT EXISTS idx_posts_unprocessed ON posts (posted_at) WHERE processed = FALSE;
+CREATE INDEX IF NOT EXISTS idx_posts_story ON posts (story_id);
+
+-- channels jadvaliga health-check ustunlari (idempotent)
+ALTER TABLE channels ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ;
+ALTER TABLE channels ADD COLUMN IF NOT EXISTS health_status   TEXT NOT NULL DEFAULT 'ok';
+ALTER TABLE channels ADD COLUMN IF NOT EXISTS last_error      TEXT;

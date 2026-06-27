@@ -8,11 +8,18 @@ Vazifalar:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Optional
 
 from telethon import TelegramClient, events, utils
+from telethon.errors import (
+    ChannelPrivateError,
+    FloodWaitError,
+    UsernameInvalidError,
+    UsernameNotOccupiedError,
+)
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Channel
@@ -157,6 +164,65 @@ class Userbot:
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Post saqlashda xatolik: %s", exc)
+
+    # ----------------------------------------------------------
+    #  Kanal "salomatligi" tekshiruvi (#4)
+    # ----------------------------------------------------------
+    async def check_channels(self, bot) -> None:
+        """
+        Har bir faol kanalni tekshiradi: o'chirilganmi, yopiq bo'lib qolganmi,
+        username o'zgarganmi. Muammo bo'lsa adminlarni ogohlantiradi.
+        """
+        channels = await repo.get_all_active_channels()
+        logger.info("Health check: %d ta kanal tekshirilmoqda.", len(channels))
+        for ch in channels:
+            status = "ok"
+            error: Optional[str] = None
+            try:
+                ident = ch["username"] or ch["tg_channel_id"]
+                entity = await self.client.get_entity(ident)
+                new_username = getattr(entity, "username", None)
+                new_title = getattr(entity, "title", None)
+                if new_username != ch["username"]:
+                    await repo.update_channel_identity(ch["id"], new_username, new_title)
+                    status = "renamed"
+                    error = f"username o'zgardi: @{ch['username']} → @{new_username}"
+                elif new_title != ch["title"]:
+                    await repo.update_channel_identity(ch["id"], new_username, new_title)
+            except ChannelPrivateError:
+                status, error = "private", "kanal yopiq (private) bo'lib qoldi"
+            except (UsernameNotOccupiedError, UsernameInvalidError, ValueError):
+                status, error = "deleted", "kanal topilmadi yoki o'chirilgan"
+            except FloodWaitError as exc:
+                logger.warning("Health check flood-wait: %ss", exc.seconds)
+                await asyncio.sleep(min(exc.seconds, 60))
+                continue
+            except Exception as exc:  # noqa: BLE001
+                status, error = "error", str(exc)[:200]
+
+            await repo.update_channel_health(ch["id"], status, error)
+            if status != "ok":
+                await self._notify_admins(bot, ch, status, error)
+            await asyncio.sleep(0.5)  # flood limitdan saqlanish
+
+    async def _notify_admins(self, bot, ch, status: str, error: Optional[str]) -> None:
+        title = ch["title"] or ch["username"] or ch["tg_channel_id"]
+        text = (
+            "⚠️ <b>Kanal muammosi aniqlandi</b>\n\n"
+            f"📡 Kanal: {title}\n"
+            f"🔖 @{ch['username']}\n"
+            f"📊 Holat: <b>{status}</b>\n"
+            f"💬 {error or ''}"
+        )
+        for admin_id in config.admin_ids:
+            try:
+                await bot.send_message(admin_id, text)
+            except Exception:  # noqa: BLE001
+                pass
+        await repo.log_audit(
+            "channel_health",
+            details={"channel_id": ch["id"], "status": status, "error": error},
+        )
 
 
 # Global yagona obyekt (main.py da yaratiladi)

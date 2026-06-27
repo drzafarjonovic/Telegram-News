@@ -1,8 +1,10 @@
 """
-Digest tayyorlash moduli.
+Digest tayyorlash moduli — BOSQICH B (shaxsiy, AI'siz).
 
-Foydalanuvchi obuna bo'lgan kanallardan ma'lum oraliqdagi postlarni yig'adi,
-AI yordamida mavzularga guruhlaydi va yuborishga tayyor matn qaytaradi.
+Bosqich A allaqachon postlarni "story"larga aylantirib, AI tahlilini
+cache'lab qo'ygan. Bu modul shunchaki foydalanuvchi obuna bo'lgan kanallardagi
+tayyor storylarni olib, kategoriya bo'yicha guruhlab, muhimlik va manba bilan
+formatlaydi. AI CHAQIRILMAYDI — tez va token tejamkor.
 """
 from __future__ import annotations
 
@@ -13,37 +15,14 @@ from zoneinfo import ZoneInfo
 
 from config import config
 from app.db import repository as repo
-from app import ai_analyzer
 
 logger = logging.getLogger(__name__)
 
-# Bitta postdan AI ga yuboriladigan maksimal belgi (juda uzunlarni qisqartirish)
-_MAX_POST_LEN = 1500
 # Telegram bitta xabar uchun chegara (~4096); xavfsiz bo'lish uchun
 _TG_LIMIT = 3800
 
-
-def _fmt_source(title: Optional[str], username: Optional[str]) -> str:
-    if username:
-        return f"@{username}"
-    return title or "noma'lum kanal"
-
-
-def _build_posts_block(posts) -> str:
-    """Postlarni AI uchun bitta matn blokiga aylantiradi."""
-    lines: list[str] = []
-    for i, p in enumerate(posts, 1):
-        source = _fmt_source(p["title"], p["username"])
-        text = (p["text"] or "").strip()
-        if len(text) > _MAX_POST_LEN:
-            text = text[:_MAX_POST_LEN] + "…"
-        lines.append(f"[{i}] Manba: {source}\n{text}\n")
-    return "\n".join(lines)
-
-
-def _chunk(posts, size: int):
-    for i in range(0, len(posts), size):
-        yield posts[i : i + size]
+_SENTIMENT_EMOJI = {"positive": "🟢", "negative": "🔴", "neutral": "⚪️"}
+_SENTIMENT_UZ = {"positive": "ijobiy", "negative": "salbiy", "neutral": "betaraf"}
 
 
 def _tashkent(dt: datetime) -> str:
@@ -57,49 +36,64 @@ def _tashkent(dt: datetime) -> str:
     return dt.astimezone(tz).strftime("%d.%m.%Y %H:%M")
 
 
+def _importance_mark(importance: int) -> str:
+    stars = "⭐" * max(1, min(5, importance))
+    flag = "🔥" if importance >= 4 else "▫️"
+    return f"{flag} {stars}"
+
+
+def _format_story(story) -> str:
+    summary = (story["summary"] or "").strip()
+    sources = story["sources"] or []
+    sources_str = ", ".join(s for s in sources if s) or "—"
+    sentiment = story["sentiment"] or "neutral"
+    sent_emoji = _SENTIMENT_EMOJI.get(sentiment, "⚪️")
+    sent_uz = _SENTIMENT_UZ.get(sentiment, "betaraf")
+    return (
+        f"{_importance_mark(story['importance'])}\n"
+        f"{summary}\n"
+        f"{sent_emoji} {sent_uz} · <i>Manba: {sources_str}</i>\n"
+    )
+
+
 async def build_digest(
     user_id: int, since: Optional[datetime], until: datetime
 ) -> Optional[dict]:
     """
-    Foydalanuvchi uchun digest tayyorlaydi.
-
-    Qaytaradi: {"content": str, "post_count": int} yoki None (post yo'q / xato).
+    Foydalanuvchi uchun cache'langan storylardan digest tayyorlaydi.
+    Qaytaradi: {"content": str, "post_count": int} yoki None (yangilik yo'q).
     """
-    posts = await repo.get_posts_for_user(user_id, since, until)
-    if not posts:
-        return None  # post yo'q -> jim qolamiz
+    stories = await repo.get_stories_for_user(user_id, since, until)
+    if not stories:
+        return None  # yangilik yo'q -> jim qolamiz
 
-    if ai_analyzer.analyzer is None:
-        logger.error("AI analyzer ishga tushirilmagan.")
-        return None
+    # Kategoriya bo'yicha guruhlash (kirish muhimlik bo'yicha tartiblangan,
+    # shuning uchun eng muhim kategoriya birinchi keladi)
+    groups: dict[str, list] = {}
+    order: list[str] = []
+    for st in stories:
+        cat = st["category"] or "Boshqa"
+        if cat not in groups:
+            groups[cat] = []
+            order.append(cat)
+        groups[cat].append(st)
 
-    # Chunking: ko'p post bo'lsa, bo'lib-bo'lib tahlil qilamiz
-    chunk_size = config.max_posts_per_chunk
-    parts: list[str] = []
-    for chunk in _chunk(posts, chunk_size):
-        block = _build_posts_block(chunk)
-        result = await ai_analyzer.analyzer.analyze(block, user_id=user_id)
-        if result:
-            parts.append(result)
-
-    if not parts:
-        return None  # AI xatosi
-
-    body = "\n\n".join(parts)
-
-    # Sarlavha
     period = (
         f"{_tashkent(since)} — {_tashkent(until)}" if since else f"{_tashkent(until)} gacha"
     )
-    header = (
-        f"📰 <b>Yangiliklar mazmuni</b>\n"
-        f"🕐 {period}\n"
-        f"📊 {len(posts)} ta post tahlil qilindi\n"
-        f"{'─' * 20}\n\n"
-    )
+    parts = [
+        "📰 <b>Yangiliklar mazmuni</b>",
+        f"🕐 {period}",
+        f"📊 {len(stories)} ta yangilik",
+        "─" * 20,
+    ]
+    for cat in order:
+        parts.append(f"\n📁 <b>{cat}</b>")
+        for st in groups[cat]:
+            parts.append(_format_story(st))
 
-    content = header + body
-    return {"content": content, "post_count": len(posts)}
+    content = "\n".join(parts)
+    return {"content": content, "post_count": len(stories)}
 
 
 def split_for_telegram(text: str) -> list[str]:
@@ -112,7 +106,6 @@ def split_for_telegram(text: str) -> list[str]:
         if len(current) + len(paragraph) + 2 > _TG_LIMIT:
             if current:
                 chunks.append(current.rstrip())
-            # Agar bitta paragraf juda uzun bo'lsa, majburiy kesamiz
             while len(paragraph) > _TG_LIMIT:
                 chunks.append(paragraph[:_TG_LIMIT])
                 paragraph = paragraph[_TG_LIMIT:]

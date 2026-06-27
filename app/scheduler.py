@@ -16,7 +16,8 @@ from aiogram.enums import ParseMode
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.db import repository as repo
-from app import digest
+from app import ai_analyzer, digest, processing
+from app import userbot as userbot_mod
 
 logger = logging.getLogger(__name__)
 
@@ -74,11 +75,17 @@ class DigestScheduler:
         self.scheduler = AsyncIOScheduler(timezone="UTC")
 
     def start(self) -> None:
-        # Har daqiqada due jadvallarni tekshirish
+        # Har daqiqada: (1) yangi postlarni qayta ishlash (Bosqich A),
+        # (2) due jadvallarga digest yuborish (Bosqich B)
         self.scheduler.add_job(
             self._tick, "interval", minutes=1, id="digest_tick", max_instances=1
         )
-        # Har kuni yarim tunda eski postlarni tozalash
+        # Har 6 soatda kanal salomatligini tekshirish
+        self.scheduler.add_job(
+            self._health_check, "interval", hours=6, id="health_check",
+            max_instances=1,
+        )
+        # Har kuni eski post va storylarni tozalash
         self.scheduler.add_job(
             self._cleanup, "cron", hour=3, minute=0, id="cleanup"
         )
@@ -90,6 +97,13 @@ class DigestScheduler:
             self.scheduler.shutdown(wait=False)
 
     async def _tick(self) -> None:
+        # Bosqich A — yangi postlarni story'larga aylantirish (umumiy, cache)
+        try:
+            await processing.process_new_posts(ai_analyzer.analyzer)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Bosqich A (processing) xatosi: %s", exc)
+
+        # Bosqich B — due foydalanuvchilarga digest
         now = _now_utc()
         try:
             schedules = await repo.get_active_schedules()
@@ -107,6 +121,14 @@ class DigestScheduler:
                     schedule["user_id"],
                     exc,
                 )
+
+    async def _health_check(self) -> None:
+        if userbot_mod.userbot is None:
+            return
+        try:
+            await userbot_mod.userbot.check_channels(self.bot)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Health check xatosi: %s", exc)
 
     async def _send_digest(self, schedule, now: datetime) -> None:
         user_id = schedule["user_id"]
@@ -141,7 +163,10 @@ class DigestScheduler:
 
     async def _cleanup(self) -> None:
         try:
-            deleted = await repo.cleanup_old_posts(days=7)
-            logger.info("Eski postlar tozalandi: %d ta", deleted)
+            deleted_posts = await repo.cleanup_old_posts(days=7)
+            deleted_stories = await repo.cleanup_old_stories(days=7)
+            logger.info(
+                "Tozalandi: %d post, %d story.", deleted_posts, deleted_stories
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Tozalashda xatolik: %s", exc)

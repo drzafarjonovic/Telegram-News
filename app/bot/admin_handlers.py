@@ -425,15 +425,17 @@ async def cb_status(callback: CallbackQuery) -> None:
 # ============================================================
 @admin_router.callback_query(F.data == "adm:settings")
 async def cb_settings(callback: CallbackQuery) -> None:
+    chain = " → ".join(p["name"] for p in config.ai_providers()) or "—"
     text = (
         "⚙️ <b>Global sozlamalar</b>\n"
         f"{'─' * 22}\n"
         f"🧠 AI provayder: <b>{config.ai_provider}</b>\n"
+        f"🔁 Fallback zanjiri: {chain}\n"
         f"🤖 Model: <code>{config.model_name}</code>\n"
         f"🌐 Tahlil tili: {config.analysis_language}\n"
         f"🕐 Vaqt mintaqasi: {config.timezone}\n"
+        f"🧩 Dedup o'xshashligi: {config.dedup_similarity}\n"
         f"📡 Max kanal/foydalanuvchi: {config.max_channels_per_user}\n"
-        f"📦 Max post/chunk: {config.max_posts_per_chunk}\n"
         f"👑 Adminlar: {len(config.admin_ids)} ta\n\n"
         "<i>Bu qiymatlar .env / Railway Variables orqali o'zgartiriladi.</i>"
     )

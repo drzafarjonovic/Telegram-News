@@ -524,3 +524,165 @@ async def get_stats() -> dict[str, Any]:
             "ai_tokens": ai_tokens,
             "top_channels": top_channels,
         }
+
+
+
+# ============================================================
+#  FAZA 1 — STORIES (cache pipeline) & DEDUP
+# ============================================================
+async def get_unprocessed_posts(limit: int = 25):
+    """Hali tahlil qilinmagan, matnli postlar (eng eskisidan)."""
+    async with db.acquire() as conn:
+        return await conn.fetch(
+            """SELECT id, channel_id, text, posted_at
+               FROM posts
+               WHERE processed = FALSE
+                 AND text IS NOT NULL AND length(trim(text)) > 0
+               ORDER BY posted_at
+               LIMIT $1""",
+            limit,
+        )
+
+
+async def get_recent_stories(hours: int = 24):
+    """Dedup uchun so'nggi storylar (id + keywords)."""
+    async with db.acquire() as conn:
+        return await conn.fetch(
+            """SELECT id, keywords
+               FROM stories
+               WHERE created_at >= now() - ($1 || ' hours')::interval
+                 AND keywords IS NOT NULL""",
+            str(hours),
+        )
+
+
+async def create_story(
+    summary: str,
+    category: str,
+    importance: int,
+    sentiment: str,
+    lang: str,
+    keywords: str,
+    first_posted_at,
+) -> int:
+    """Yangi story yaratadi va id qaytaradi (post_count=1)."""
+    async with db.acquire() as conn:
+        return await conn.fetchval(
+            """INSERT INTO stories
+               (summary, category, importance, sentiment, lang,
+                keywords, first_posted_at, post_count)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
+               RETURNING id""",
+            summary,
+            category,
+            importance,
+            sentiment,
+            lang,
+            keywords,
+            first_posted_at,
+        )
+
+
+async def mark_post_processed(post_id: int, story_id: int | None) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            "UPDATE posts SET processed = TRUE, story_id = $2 WHERE id = $1",
+            post_id,
+            story_id,
+        )
+
+
+async def increment_story(story_id: int, posted_at) -> None:
+    """Dublikat post qo'shilganda story hisobini oshiradi va eng erta vaqtni saqlaydi."""
+    async with db.acquire() as conn:
+        await conn.execute(
+            """UPDATE stories
+               SET post_count = post_count + 1,
+                   first_posted_at = LEAST(first_posted_at, $2)
+               WHERE id = $1""",
+            story_id,
+            posted_at,
+        )
+
+
+async def get_stories_for_user(user_id: int, since, until):
+    """
+    Foydalanuvchi obuna bo'lgan kanallardagi postlardan tashkil topgan,
+    [since, until] oralig'idagi storylar — manbalari (sources) bilan.
+    AI chaqirilmaydi; tayyor cache qaytariladi.
+    """
+    async with db.acquire() as conn:
+        if since is None:
+            return await conn.fetch(
+                """SELECT st.id, st.summary, st.category, st.importance, st.sentiment,
+                          array_agg(DISTINCT COALESCE('@' || c.username, c.title)) AS sources
+                   FROM stories st
+                   JOIN posts p ON p.story_id = st.id
+                   JOIN subscriptions s ON s.channel_id = p.channel_id
+                   JOIN channels c ON c.id = p.channel_id
+                   WHERE s.user_id = $1 AND p.posted_at <= $2
+                   GROUP BY st.id
+                   ORDER BY st.importance DESC, st.first_posted_at""",
+                user_id,
+                until,
+            )
+        return await conn.fetch(
+            """SELECT st.id, st.summary, st.category, st.importance, st.sentiment,
+                      array_agg(DISTINCT COALESCE('@' || c.username, c.title)) AS sources
+               FROM stories st
+               JOIN posts p ON p.story_id = st.id
+               JOIN subscriptions s ON s.channel_id = p.channel_id
+               JOIN channels c ON c.id = p.channel_id
+               WHERE s.user_id = $1 AND p.posted_at > $2 AND p.posted_at <= $3
+               GROUP BY st.id
+               ORDER BY st.importance DESC, st.first_posted_at""",
+            user_id,
+            since,
+            until,
+        )
+
+
+async def cleanup_old_stories(days: int = 7) -> int:
+    async with db.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM stories WHERE created_at < now() - ($1 || ' days')::interval",
+            str(days),
+        )
+        try:
+            return int(result.split()[-1])
+        except (ValueError, IndexError):
+            return 0
+
+
+# ============================================================
+#  FAZA 1 — CHANNEL HEALTH CHECK
+# ============================================================
+async def get_all_active_channels():
+    async with db.acquire() as conn:
+        return await conn.fetch(
+            "SELECT * FROM channels WHERE is_active = TRUE ORDER BY id"
+        )
+
+
+async def update_channel_health(channel_id: int, status: str, error: str | None) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            """UPDATE channels
+               SET health_status = $2, last_error = $3, last_checked_at = now()
+               WHERE id = $1""",
+            channel_id,
+            status,
+            error,
+        )
+
+
+async def update_channel_identity(
+    channel_id: int, username: str | None, title: str | None
+) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            "UPDATE channels SET username = $2, title = $3 WHERE id = $1",
+            channel_id,
+            username,
+            title,
+        )

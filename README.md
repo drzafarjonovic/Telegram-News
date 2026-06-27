@@ -164,3 +164,34 @@ AI_MODEL=             # bo'sh bo'lsa standart model ishlatiladi
 - Faqat **ochiq** kanallar qo'llab-quvvatlanadi (yopiq kanal uchun userbot akkaunti a'zo bo'lishi kerak).
 - Barcha kanallar bitta userbot akkaunti orqali kuzatiladi — Telegram bitta akkaunt uchun ~500 kanal cheklovini qo'yadi.
 - Postlar 7 kundan keyin avtomatik tozalanadi (`scheduler.py`).
+
+
+---
+
+## 🧩 Faza 1 — Cache pipeline & barqarorlik
+
+Bot endi **2-bosqichli** ishlaydi (token tejash + personalizatsiya):
+
+**Bosqich A (umumiy, har yangilik uchun 1 marta):**
+1. Yangi postlar `Jaccard` o'xshashligi orqali **dublikatlar**ga tekshiriladi (Kun.uz, Daryo va h.k. dagi bir xil yangilik birlashtiriladi).
+2. Har bir noyob yangilik (story) uchun AI **bir marta** ishlaydi va natijani cache'laydi:
+   - 📝 mazmun · 📁 kategoriya · 🔥 muhimlik (1-5) · 🟢 sentiment
+3. Natija `stories` jadvalida saqlanadi.
+
+**Bosqich B (shaxsiy, AI'siz):**
+- Foydalanuvchining digesti tayyor cache'dan yig'iladi → **70-95% token tejaladi**.
+
+**Qo'shimcha barqarorlik:**
+- 🔁 **AI fallback**: asosiy provayder ishlamasa, avtomatik keyingisiga o'tadi (`AI_FALLBACKS`).
+- 🩺 **Kanal health check**: har 6 soatda kanallar tekshiriladi (o'chirilgan / yopiq / username o'zgargan) va adminlar ogohlantiriladi.
+
+### Faza 1 uchun qo'shimcha Variables (ixtiyoriy)
+
+| Variable | Standart | Izoh |
+|----------|----------|------|
+| `AI_FALLBACKS` | *(bo'sh)* | Zaxira provayderlar, masalan `gemini,openai` |
+| `GROQ_API_KEY` / `GEMINI_API_KEY` / `OPENAI_API_KEY` | *(bo'sh)* | Fallback provayderlar kalitlari |
+| `DEDUP_SIMILARITY` | `0.5` | Dublikat chegarasi (Jaccard, 0..1) |
+| `PROCESS_BATCH_SIZE` | `25` | Har siklda qayta ishlanadigan post soni |
+
+> 💡 Fallback ishlatish uchun: `AI_FALLBACKS=gemini` qo'ying va `GEMINI_API_KEY` ni to'ldiring.
