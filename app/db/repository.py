@@ -625,7 +625,16 @@ async def get_stories_for_user(
     interests = interests or []
     base = """
         SELECT st.id, st.summary, st.category, st.importance, st.sentiment,
-               array_agg(DISTINCT COALESCE('@' || c.username, c.title)) AS sources
+               array_agg(DISTINCT
+                   CASE
+                       WHEN c.username IS NOT NULL AND c.username <> ''
+                           THEN '<a href="https://t.me/' || c.username || '/' || p.tg_message_id::text
+                                || '">@' || c.username || '</a>'
+                       ELSE replace(replace(replace(
+                                COALESCE(c.title, 'Kanal'),
+                                '&', '&amp;'), '<', '&lt;'), '>', '&gt;')
+                   END
+               ) AS sources
         FROM stories st
         JOIN posts p ON p.story_id = st.id
         JOIN subscriptions s ON s.channel_id = p.channel_id
@@ -1084,11 +1093,22 @@ async def get_breaking_candidates(within_minutes: int = 60, min_importance: int 
     async with db.acquire() as conn:
         return await conn.fetch(
             """
-            SELECT DISTINCT st.id AS story_id, st.summary, st.category,
-                            st.importance, s.user_id
+            SELECT st.id AS story_id, st.summary, st.category,
+                   st.importance, s.user_id,
+                   array_agg(DISTINCT
+                       CASE
+                           WHEN c.username IS NOT NULL AND c.username <> ''
+                               THEN '<a href="https://t.me/' || c.username || '/' || p.tg_message_id::text
+                                    || '">@' || c.username || '</a>'
+                           ELSE replace(replace(replace(
+                                    COALESCE(c.title, 'Kanal'),
+                                    '&', '&amp;'), '<', '&lt;'), '>', '&gt;')
+                       END
+                   ) AS sources
             FROM stories st
             JOIN posts p ON p.story_id = st.id
             JOIN subscriptions s ON s.channel_id = p.channel_id
+            JOIN channels c ON c.id = p.channel_id
             JOIN users u ON u.id = s.user_id
             JOIN schedules sc ON sc.user_id = s.user_id
             WHERE st.importance >= $2
@@ -1101,6 +1121,7 @@ async def get_breaking_candidates(within_minutes: int = 60, min_importance: int 
                   SELECT 1 FROM breaking_deliveries bd
                   WHERE bd.user_id = s.user_id AND bd.story_id = st.id
               )
+            GROUP BY st.id, st.summary, st.category, st.importance, s.user_id
             ORDER BY st.id
             """,
             str(within_minutes), min_importance,

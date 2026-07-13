@@ -271,10 +271,13 @@ class DigestScheduler:
         for row in rows:
             user_id = row["user_id"]
             story_id = row["story_id"]
+            sources = row["sources"] or []
+            sources_str = ", ".join(s for s in sources if s) or "—"
             text = (
                 "🚨 <b>SHOSHILINCH XABAR</b>\n\n"
                 f"🗂 {row['category']}\n"
-                f"{row['summary']}"
+                f"{row['summary']}\n\n"
+                f"<i>Manba: {sources_str}</i>"
             )
             try:
                 await self.bot.send_message(
