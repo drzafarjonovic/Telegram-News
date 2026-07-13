@@ -15,6 +15,7 @@ from aiogram import Bot
 from aiogram.enums import ParseMode
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from config import config
 from app.db import repository as repo
 from app import ai_analyzer, digest, processing
 from app import userbot as userbot_mod
@@ -89,6 +90,13 @@ class DigestScheduler:
         self.scheduler.add_job(
             self._cleanup, "cron", hour=3, minute=0, id="cleanup"
         )
+        # Har N daqiqada backfill — realtime oqimdagi bo'shliqlarni to'ldirish
+        if config.backfill_enabled:
+            self.scheduler.add_job(
+                self._backfill, "interval",
+                minutes=max(5, config.backfill_interval_min),
+                id="backfill", max_instances=1,
+            )
         self.scheduler.start()
         logger.info("Scheduler ishga tushdi.")
 
@@ -129,6 +137,14 @@ class DigestScheduler:
             await userbot_mod.userbot.check_channels(self.bot)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Health check xatosi: %s", exc)
+
+    async def _backfill(self) -> None:
+        if userbot_mod.userbot is None:
+            return
+        try:
+            await userbot_mod.userbot.backfill_all()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Backfill xatosi: %s", exc)
 
     async def _send_digest(self, schedule, now: datetime) -> None:
         user_id = schedule["user_id"]

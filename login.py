@@ -53,6 +53,5 @@ async def main() -> None:
         print("\n⚠️  Bu satrni hech kimga bermang!")
 
 
-# Skriptni to'g'ridan-to'g'ri ishga tushiramiz (Pydroid3 uchun qulay,
-# nusxalashда __name__ kabi maxsus belgilar muammo tug'dirmasligi uchun)
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
