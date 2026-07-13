@@ -18,7 +18,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
 from config import config
-from app import ai_analyzer, runtime
+from app import ai_analyzer, metrics, runtime
 from app import userbot as userbot_mod
 from app.db.pool import db, init_db
 from app.scheduler import DigestScheduler
@@ -74,11 +74,19 @@ async def main() -> None:
     user_router.message.middleware(UserMiddleware())
     user_router.callback_query.middleware(UserMiddleware())
 
-    # 5. Userbot
+    # 5. Monitoring (Prometheus metrikslari HTTP eksporti)
+    if config.metrics_enabled:
+        metrics.start_server(config.metrics_port)
+
+    # 6. Userbot (ingest pipeline / workerlar shu yerda ishga tushadi)
     userbot = userbot_mod.init_userbot()
     await userbot.start()
 
-    # 6. Scheduler
+    # 6a. Startup backfill — bot o'chiq bo'lgan vaqtdagi bo'shliqlarni to'ldirish (fon rejimida)
+    if config.backfill_enabled:
+        asyncio.create_task(userbot.backfill_all())
+
+    # 7. Scheduler
     scheduler = DigestScheduler(bot)
     scheduler.start()
     runtime.scheduler_ref = scheduler
@@ -96,6 +104,7 @@ async def main() -> None:
         logger.info("To'xtatilmoqda...")
         scheduler.shutdown()
         await userbot.stop()
+        metrics.stop_server()
         await bot.session.close()
         await db.close()
 

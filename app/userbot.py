@@ -1,16 +1,20 @@
 """
-Userbot (Telethon) — ochiq kanallarni realtime kuzatadi.
+Userbot (Telethon) — Enterprise v2.0.
 
-Vazifalar:
-  • Foydalanuvchi yuborgan kanal linkini hal qilish va kanalga qo'shilish.
-  • Kuzatilayotgan kanallardagi har bir yangi postni Postgres'ga saqlash.
-  • Kuzatiladigan kanallar ro'yxatini bazadan yangilab turish (cache).
+Yangiliklar (oldingi versiyaga nisbatan):
+  • Hodisalar: events.NewMessage + events.Album + MessageEdited + MessageDeleted
+  • Barcha kiruvchi xabarlar ingest navbatiga (IngestPipeline) yo'naltiriladi;
+    bir nechta asinxron worker ularni idempotent saqlaydi.
+  • Startup + davriy backfill (iter_messages/get_messages) bo'shliqlarni to'ldiradi.
+  • FloodWait xavfsiz chaqiruvlar (app.tg_utils.safe_call).
+  • Media (rasm/audio), forward va reply ma'lumotlari ham saqlanadi.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Optional
 
 from telethon import TelegramClient, events, utils
@@ -25,7 +29,10 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Channel
 
 from config import config
+from app import metrics
 from app.db import repository as repo
+from app.ingest import IngestJob, IngestPipeline
+from app.tg_utils import safe_call
 
 logger = logging.getLogger(__name__)
 
@@ -38,19 +45,16 @@ _USERNAME_RE = re.compile(
 def parse_channel_link(text: str) -> Optional[str]:
     """Matndan kanal username'ini ajratadi. Topilmasa None."""
     text = (text or "").strip()
-    # Yopiq (invite) linklar qo'llab-quvvatlanmaydi
     if "t.me/+" in text or "joinchat" in text:
         return None
     m = _USERNAME_RE.match(text)
     if not m:
         return None
-    username = m.group(1)
-    # "joinchat", "share" kabi xizmat so'zlari emasligini tekshirish shart emas
-    return username
+    return m.group(1)
 
 
 class Userbot:
-    """Telethon mijozini boshqaradi."""
+    """Telethon mijozini va ingest pipeline'ni boshqaradi."""
 
     def __init__(self) -> None:
         self.client = TelegramClient(
@@ -61,6 +65,7 @@ class Userbot:
         # tg_channel_id (marked, -100...) -> db channel id
         self._monitored: dict[int, int] = {}
         self._started = False
+        self.pipeline = IngestPipeline(self.client)
 
     # ----------------------------------------------------------
     #  Hayot sikli
@@ -72,13 +77,20 @@ class Userbot:
                 "Userbot avtorizatsiyadan o'tmagan. STRING_SESSION noto'g'ri yoki "
                 "muddati o'tgan. login.py orqali yangi sessiya yarating."
             )
+        # 1) Ingest workerlarini ishga tushiramiz
+        self.pipeline.start()
+        # 2) Hodisa handlerlari
         self.client.add_event_handler(self._on_new_message, events.NewMessage())
+        self.client.add_event_handler(self._on_album, events.Album())
+        self.client.add_event_handler(self._on_edit, events.MessageEdited())
+        self.client.add_event_handler(self._on_delete, events.MessageDeleted())
         await self.refresh_monitored()
         self._started = True
         me = await self.client.get_me()
         logger.info("Userbot ishga tushdi: %s", getattr(me, "username", me.id))
 
     async def stop(self) -> None:
+        await self.pipeline.stop()
         await self.client.disconnect()
 
     def is_connected(self) -> bool:
@@ -96,10 +108,6 @@ class Userbot:
     #  Kanal qo'shish (bot handleridan chaqiriladi)
     # ----------------------------------------------------------
     async def add_channel(self, link: str) -> dict:
-        """
-        Linkni hal qiladi, kanalga qo'shiladi va bazaga yozadi.
-        Qaytaradi: {"ok": bool, "channel": Record|None, "error": str|None}
-        """
         username = parse_channel_link(link)
         if not username:
             return {
@@ -109,9 +117,8 @@ class Userbot:
                 "(masalan @kanal yoki https://t.me/kanal).",
             }
 
-        try:
-            entity = await self.client.get_entity(username)
-        except Exception:  # noqa: BLE001
+        entity = await safe_call(lambda: self.client.get_entity(username))
+        if entity is None:
             return {
                 "ok": False,
                 "channel": None,
@@ -126,11 +133,7 @@ class Userbot:
             }
 
         # Kanalga qo'shilish (postlarni realtime olish uchun zarur)
-        try:
-            await self.client(JoinChannelRequest(entity))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Kanalga qo'shilishda ogohlantirish (%s): %s", username, exc)
-            # Ba'zan allaqachon a'zo bo'lsa xato beradi — davom etamiz
+        await safe_call(lambda: self.client(JoinChannelRequest(entity)))
 
         tg_id = utils.get_peer_id(entity)
         channel = await repo.upsert_channel(
@@ -140,39 +143,123 @@ class Userbot:
             access_hash=getattr(entity, "access_hash", None),
         )
         await self.refresh_monitored()
+        # Yangi kanaldan so'nggi postlarni darhol backfill qilamiz (fon rejimida)
+        if config.backfill_enabled:
+            asyncio.create_task(self._safe_backfill_channel(channel, config.backfill_limit))
         return {"ok": True, "channel": channel, "error": None}
 
     # ----------------------------------------------------------
-    #  Yangi post hodisasi
+    #  Hodisa handlerlari (barchasi navbatga yo'naltiradi)
     # ----------------------------------------------------------
-    async def _on_new_message(self, event: events.NewMessage.Event) -> None:
+    async def _on_new_message(self, event) -> None:
         try:
-            chat_id = event.chat_id
-            db_channel_id = self._monitored.get(chat_id)
+            db_channel_id = self._monitored.get(event.chat_id)
             if db_channel_id is None:
                 return  # kuzatilmaydigan chat
-
-            text = event.message.message or ""
-            if not text.strip():
-                return  # faqat media — matnsiz postni o'tkazib yuboramiz
-
-            await repo.insert_post(
-                channel_id=db_channel_id,
-                tg_message_id=event.message.id,
-                text=text,
-                posted_at=event.message.date,
+            msg = event.message
+            # Albumlar events.Album orqali keladi — bu yerda o'tkazib yuboramiz (dublikatni oldini olish)
+            if getattr(msg, "grouped_id", None):
+                return
+            metrics.messages_received.inc()
+            await self.pipeline.enqueue(
+                IngestJob("message", [msg], db_channel_id, event.chat_id)
             )
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Post saqlashda xatolik: %s", exc)
+            metrics.ingest_errors.inc()
+            logger.exception("NewMessage handler xatosi: %s", exc)
+
+    async def _on_album(self, event) -> None:
+        try:
+            db_channel_id = self._monitored.get(event.chat_id)
+            if db_channel_id is None:
+                return
+            msgs = list(event.messages)
+            metrics.messages_received.inc(len(msgs))
+            await self.pipeline.enqueue(
+                IngestJob(
+                    "album", msgs, db_channel_id, event.chat_id,
+                    grouped_id=getattr(event, "grouped_id", None),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            metrics.ingest_errors.inc()
+            logger.exception("Album handler xatosi: %s", exc)
+
+    async def _on_edit(self, event) -> None:
+        try:
+            db_channel_id = self._monitored.get(event.chat_id)
+            if db_channel_id is None:
+                return
+            msg = event.message
+            when = getattr(msg, "edit_date", None) or datetime.now(timezone.utc)
+            await repo.mark_post_edited(db_channel_id, msg.id, msg.message or "", when)
+            metrics.edits_total.inc()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("MessageEdited handler xatosi: %s", exc)
+
+    async def _on_delete(self, event) -> None:
+        try:
+            db_channel_id = self._monitored.get(event.chat_id) if event.chat_id else None
+            if db_channel_id is None:
+                return
+            when = datetime.now(timezone.utc)
+            for mid in event.deleted_ids:
+                await repo.mark_post_deleted(db_channel_id, mid, when)
+            metrics.deletes_total.inc(len(event.deleted_ids))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("MessageDeleted handler xatosi: %s", exc)
 
     # ----------------------------------------------------------
-    #  Kanal "salomatligi" tekshiruvi (#4)
+    #  Backfill (GetHistory) — bo'shliqlarni to'ldirish
+    # ----------------------------------------------------------
+    async def backfill_all(self, per_channel_limit: int | None = None) -> int:
+        limit = per_channel_limit or config.backfill_limit
+        channels = await repo.get_all_monitored_channels()
+        total = 0
+        logger.info("Backfill boshlandi: %d ta kanal (limit=%d).", len(channels), limit)
+        for ch in channels:
+            total += await self._safe_backfill_channel(ch, limit)
+            await asyncio.sleep(0.5)  # flood limitdan saqlanish
+        logger.info("Backfill yakunlandi: %d ta xabar navbatga qo'yildi.", total)
+        return total
+
+    async def _safe_backfill_channel(self, ch, limit: int) -> int:
+        try:
+            return await self._backfill_channel(ch, limit)
+        except FloodWaitError as exc:
+            metrics.floodwait_total.inc()
+            logger.warning("Backfill flood-wait: %ss", exc.seconds)
+            await asyncio.sleep(min(exc.seconds, 300) + 1)
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Backfill xatosi (%s): %s", ch.get("username"), exc)
+            return 0
+
+    async def _backfill_channel(self, ch, limit: int) -> int:
+        """Kanaldagi oxirgi saqlangan xabardan keyingi (yangi) postlarni oladi."""
+        last_id = await repo.get_max_message_id(ch["id"]) or 0
+        ident = ch["username"] or ch["tg_channel_id"]
+        count = 0
+        # min_id=last_id => faqat last_id dan katta (yangi) xabarlar; limit soni bilan cheklanadi
+        async for msg in self.client.iter_messages(ident, min_id=last_id, limit=limit):
+            if not (msg.message or msg.media):
+                continue
+            await self.pipeline.enqueue(
+                IngestJob(
+                    "message", [msg], ch["id"], ch["tg_channel_id"],
+                    grouped_id=getattr(msg, "grouped_id", None),
+                    source="backfill",
+                )
+            )
+            count += 1
+            metrics.backfill_messages.inc()
+        await repo.set_channel_backfilled(ch["id"])
+        return count
+
+    # ----------------------------------------------------------
+    #  Kanal "salomatligi" tekshiruvi
     # ----------------------------------------------------------
     async def check_channels(self, bot) -> None:
-        """
-        Har bir faol kanalni tekshiradi: o'chirilganmi, yopiq bo'lib qolganmi,
-        username o'zgarganmi. Muammo bo'lsa adminlarni ogohlantiradi.
-        """
         channels = await repo.get_all_active_channels()
         logger.info("Health check: %d ta kanal tekshirilmoqda.", len(channels))
         for ch in channels:
@@ -194,6 +281,7 @@ class Userbot:
             except (UsernameNotOccupiedError, UsernameInvalidError, ValueError):
                 status, error = "deleted", "kanal topilmadi yoki o'chirilgan"
             except FloodWaitError as exc:
+                metrics.floodwait_total.inc()
                 logger.warning("Health check flood-wait: %ss", exc.seconds)
                 await asyncio.sleep(min(exc.seconds, 60))
                 continue

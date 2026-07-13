@@ -731,3 +731,188 @@ async def update_channel_identity(
             username,
             title,
         )
+
+
+# ============================================================
+#  ENTERPRISE v2.0 — RAW, POSTS(upsert), MEDIA, EDIT/DELETE,
+#                     BACKFILL, PROCESSING LOGS
+# ============================================================
+async def insert_raw_message(
+    *, channel_id: int, tg_channel_id: int, tg_message_id: int, raw_json: str
+) -> bool:
+    """Xabarning xom JSON ko'rinishini idempotent saqlaydi. True = yangi qo'shildi."""
+    async with db.acquire() as conn:
+        result = await conn.execute(
+            """INSERT INTO raw_messages
+                   (channel_id, tg_channel_id, tg_message_id, raw_data)
+               VALUES ($1, $2, $3, $4::jsonb)
+               ON CONFLICT (tg_channel_id, tg_message_id) DO NOTHING""",
+            channel_id,
+            tg_channel_id,
+            tg_message_id,
+            raw_json,
+        )
+        return result.endswith("1")
+
+
+async def upsert_post(
+    *,
+    channel_id: int,
+    tg_message_id: int,
+    text: str,
+    posted_at,
+    caption: Optional[str] = None,
+    has_media: bool = False,
+    grouped_id: Optional[int] = None,
+    is_forwarded: bool = False,
+    fwd_from_channel: Optional[str] = None,
+    reply_to_message_id: Optional[int] = None,
+) -> dict:
+    """
+    Postni idempotent saqlaydi/yangilaydi va {id, inserted} qaytaradi.
+    `inserted` True bo'lsa — yangi qo'shildi, False bo'lsa — mavjudi yangilandi.
+    (xmax = 0) hiylasi orqali insert/update ajratiladi.
+    """
+    async with db.acquire() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO posts
+                   (channel_id, tg_message_id, text, posted_at, caption,
+                    has_media, grouped_id, is_forwarded, fwd_from_channel,
+                    reply_to_message_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+               ON CONFLICT (channel_id, tg_message_id) DO UPDATE
+                   SET text = EXCLUDED.text,
+                       caption = EXCLUDED.caption,
+                       has_media = EXCLUDED.has_media,
+                       grouped_id = COALESCE(EXCLUDED.grouped_id, posts.grouped_id),
+                       is_forwarded = EXCLUDED.is_forwarded,
+                       fwd_from_channel = EXCLUDED.fwd_from_channel,
+                       reply_to_message_id = EXCLUDED.reply_to_message_id
+               RETURNING id, (xmax = 0) AS inserted""",
+            channel_id,
+            tg_message_id,
+            text,
+            posted_at,
+            caption,
+            has_media,
+            grouped_id,
+            is_forwarded,
+            fwd_from_channel,
+            reply_to_message_id,
+        )
+        return {"id": row["id"], "inserted": row["inserted"]}
+
+
+async def insert_media(
+    *,
+    post_id: int,
+    channel_id: int,
+    tg_message_id: int,
+    file_id: Optional[str],
+    unique_file_id: Optional[str],
+    media_type: str,
+    caption: Optional[str] = None,
+) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO media
+                   (post_id, channel_id, tg_message_id, file_id,
+                    unique_file_id, media_type, caption)
+               VALUES ($1,$2,$3,$4,$5,$6,$7)
+               ON CONFLICT (channel_id, tg_message_id, unique_file_id) DO NOTHING""",
+            post_id,
+            channel_id,
+            tg_message_id,
+            file_id,
+            unique_file_id,
+            media_type,
+            caption,
+        )
+
+
+async def append_post_text_extra(
+    post_id: int, *, ocr_text: Optional[str] = None, transcript: Optional[str] = None
+) -> None:
+    """Postga OCR/transkript matnini qo'shadi (media jadvaliga ham)."""
+    async with db.acquire() as conn:
+        await conn.execute(
+            """UPDATE posts
+               SET ocr_text = COALESCE($2, ocr_text),
+                   transcript = COALESCE($3, transcript)
+               WHERE id = $1""",
+            post_id,
+            ocr_text,
+            transcript,
+        )
+        await conn.execute(
+            """UPDATE media
+               SET ocr_text = COALESCE($2, ocr_text),
+                   transcript = COALESCE($3, transcript)
+               WHERE post_id = $1""",
+            post_id,
+            ocr_text,
+            transcript,
+        )
+
+
+async def mark_post_edited(
+    channel_id: int, tg_message_id: int, new_text: str, edited_at
+) -> None:
+    """Tahrirlangan xabar: matnni yangilaydi va qayta tahlil uchun belgilaydi."""
+    async with db.acquire() as conn:
+        await conn.execute(
+            """UPDATE posts
+               SET text = $3, edited_at = $4, processed = FALSE, story_id = NULL
+               WHERE channel_id = $1 AND tg_message_id = $2""",
+            channel_id,
+            tg_message_id,
+            new_text,
+            edited_at,
+        )
+
+
+async def mark_post_deleted(channel_id: int, tg_message_id: int, when) -> None:
+    """O'chirilgan xabarni tomb-stone qiladi (digestlarga tushmaydi)."""
+    async with db.acquire() as conn:
+        await conn.execute(
+            """UPDATE posts SET deleted_at = $3
+               WHERE channel_id = $1 AND tg_message_id = $2""",
+            channel_id,
+            tg_message_id,
+            when,
+        )
+
+
+async def get_max_message_id(channel_id: int) -> Optional[int]:
+    """Backfill uchun: kanaldagi eng katta saqlangan tg_message_id."""
+    async with db.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT max(tg_message_id) FROM posts WHERE channel_id = $1", channel_id
+        )
+
+
+async def set_channel_backfilled(channel_id: int) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            "UPDATE channels SET last_backfilled_at = now() WHERE id = $1", channel_id
+        )
+
+
+async def log_processing(
+    post_id: Optional[int],
+    channel_id: Optional[int],
+    stage: str,
+    status: str,
+    error_msg: Optional[str] = None,
+) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO processing_logs
+                   (post_id, channel_id, stage, status, error_msg)
+               VALUES ($1,$2,$3,$4,$5)""",
+            post_id,
+            channel_id,
+            stage,
+            status,
+            error_msg,
+        )

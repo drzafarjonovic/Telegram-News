@@ -104,6 +104,29 @@ class Config:
     max_channels_per_user: int = _get_int("MAX_CHANNELS_PER_USER", 10)
     max_posts_per_chunk: int = _get_int("MAX_POSTS_PER_CHUNK", 40)
 
+    # ---- Enterprise v2.0: ingest pipeline (navbat + workerlar) ----
+    ingest_workers: int = _get_int("INGEST_WORKERS", 4)
+    ingest_queue_max: int = _get_int("INGEST_QUEUE_MAX", 5000)
+    store_raw: bool = os.getenv("STORE_RAW_MESSAGES", "true").strip().lower() in ("1", "true", "yes", "on")
+
+    # ---- Enterprise v2.0: backfill (GetHistory, bo'shliqlarni to'ldirish) ----
+    backfill_enabled: bool = os.getenv("BACKFILL_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+    backfill_limit: int = _get_int("BACKFILL_LIMIT", 100)
+    backfill_interval_min: int = _get_int("BACKFILL_INTERVAL_MIN", 60)
+
+    # ---- Enterprise v2.0: media (OCR / Speech-to-Text) ----
+    ocr_enabled: bool = os.getenv("OCR_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+    ocr_langs: str = os.getenv("OCR_LANGS", "eng").strip() or "eng"
+    stt_enabled: bool = os.getenv("STT_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+    stt_api_key: str = os.getenv("STT_API_KEY", "")
+    stt_base_url: str = os.getenv("STT_BASE_URL", "").strip()
+    stt_model: str = os.getenv("STT_MODEL", "whisper-1").strip() or "whisper-1"
+    media_download_max_mb: int = _get_int("MEDIA_DOWNLOAD_MAX_MB", 15)
+
+    # ---- Enterprise v2.0: monitoring (Prometheus metrikslari) ----
+    metrics_enabled: bool = os.getenv("METRICS_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+    metrics_port: int = _get_int("METRICS_PORT", 9101)
+
     @property
     def ai_base_url(self) -> str | None:
         return BASE_URLS.get(self.ai_provider)

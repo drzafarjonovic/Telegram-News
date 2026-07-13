@@ -195,3 +195,62 @@ Bot endi **2-bosqichli** ishlaydi (token tejash + personalizatsiya):
 | `PROCESS_BATCH_SIZE` | `25` | Har siklda qayta ishlanadigan post soni |
 
 > 💡 Fallback ishlatish uchun: `AI_FALLBACKS=gemini` qo'ying va `GEMINI_API_KEY` ni to'ldiring.
+
+
+---
+
+## 🚀 Enterprise v2.0 — xabarlarni yo'qotmasdan yig'ish
+
+Bu versiya botni “xabar yo'qolmaydi” prinsipi asosida qayta qurdi. Asosiy yangiliklar:
+
+### 1. Ingest pipeline (navbat + workerlar)
+Kiruvchi hodisalar (`events.NewMessage`, `events.Album`) darhol `asyncio.Queue`ga
+yoziladi; bir nechta asinxron worker (`INGEST_WORKERS`) ularni olib idempotent
+tarzda bazaga saqlaydi. Navbat to'lsa — backpressure (joy bo'shaguncha kutish).
+Modul: `app/ingest.py`.
+
+### 2. Kengaytirilgan DB sxemasi
+`app/db/schema.sql` (idempotent, mavjud bazaga xavfsiz qo'llanadi):
+- **raw_messages** — har xabarning xom JSON nusxasi (`UNIQUE(tg_channel_id, tg_message_id)`).
+- **posts** yangi ustunlar: `caption`, `has_media`, `grouped_id`, `is_forwarded`,
+  `fwd_from_channel`, `reply_to_message_id`, `edited_at`, `deleted_at`, `ocr_text`, `transcript`.
+- **media** — media metadata (`UNIQUE(channel_id, tg_message_id, unique_file_id)`).
+- **processing_logs** — har bosqich (ingest/ocr/whisper) auditi.
+
+### 3. Idempotentlik
+`posts` UNIQUE(channel_id, tg_message_id) + `ON CONFLICT` — bir xil xabar
+realtime va backfill orqali kelsa ham dublikat bo'lmaydi.
+
+### 4. Album, forward va reply
+Albomlar `events.Album` orqali bitta hodisa sifatida olinadi; caption
+(`message.message`/`raw_text`), forward (`fwd_from`) va reply (`reply_to_msg_id`)
+ma'lumotlari saqlanadi. Endi media-only postlar ham (caption bilan) yig'iladi.
+
+### 5. Backfill (GetHistory)
+Startup'da va har `BACKFILL_INTERVAL_MIN` daqiqada har kanaldan oxirgi saqlangan
+`tg_message_id`dan keyingi xabarlar (`iter_messages(min_id=...)`) olinadi —
+bot o'chiq bo'lgan davrdagi bo'shliqlar to'ldiriladi.
+
+### 6. Tahrir / o'chirish kuzatuvi
+`MessageEdited` → matn yangilanadi va qayta tahlilga belgilanadi; `MessageDeleted`
+→ `deleted_at` (tomb-stone), o'chirilgan postlar digestlarga tushmaydi.
+
+### 7. OCR + Speech-to-Text (ixtiyoriy)
+`app/media.py`: rasmlar uchun `pytesseract` (OCR), audio uchun Whisper API.
+Har ikkisi ham ixtiyoriy va sekin degradatsiya qiladi (kutubxona/kalit bo'lmasa
+bot ishlayveradi). `OCR_ENABLED` / `STT_ENABLED` bilan yoqiladi.
+
+### 8. FloodWait bardoshliligi
+`app/tg_utils.py` → `safe_call(...)` API chaqiruvlarini FloodWait bilan xavfsiz
+bajaradi (`asyncio.sleep(e.seconds)` + retry).
+
+### 9. Monitoring (Prometheus + Grafana)
+`app/metrics.py` — tashqi kutubxonasiz `/metrics` (Prometheus formati) va
+`/healthz`. Metrikslar: qabul/qayta ishlangan/tashlangan xabarlar, navbat
+uzunligi, faol workerlar, OCR/STT, backfill, tahrir/o'chirish, FloodWait.
+Prometheus scrape target: `http://<host>:9101/metrics`.
+
+### Konteynerizatsiya
+`Dockerfile` (python:3.11-slim + tesseract) autoscaling/deploy uchun.
+
+Batafsil o'zgarishlar ro'yxati: **ENTERPRISE_V2_CHANGELOG.md**.

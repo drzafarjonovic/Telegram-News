@@ -150,3 +150,66 @@ ALTER TABLE channels ADD COLUMN IF NOT EXISTS last_error      TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS interests TEXT[] NOT NULL DEFAULT '{}';
 -- importance_min: digestga tushadigan minimal muhimlik (1=hammasi, 3=muhim, 4=eng muhim)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS importance_min SMALLINT NOT NULL DEFAULT 1;
+
+
+-- ============================================================
+--  ENTERPRISE v2.0 — ingestion pipeline, media, raw log, edits
+-- ============================================================
+
+-- Har bir Telegram xabarining xom (raw) JSON ko'rinishi — audit / qayta ishlash uchun.
+CREATE TABLE IF NOT EXISTS raw_messages (
+    id             BIGSERIAL PRIMARY KEY,
+    channel_id     INTEGER REFERENCES channels(id) ON DELETE CASCADE,
+    tg_channel_id  BIGINT NOT NULL,
+    tg_message_id  BIGINT NOT NULL,
+    raw_data       JSONB,
+    received_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tg_channel_id, tg_message_id)             -- idempotentlik kafolati
+);
+CREATE INDEX IF NOT EXISTS idx_raw_channel_msg ON raw_messages (channel_id, tg_message_id);
+
+-- posts jadvaliga Enterprise ustunlari (idempotent, mavjud bazaga xavfsiz qo'shiladi)
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS caption             TEXT;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS has_media           BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS grouped_id          BIGINT;       -- album (media group) id
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS is_forwarded        BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS fwd_from_channel    TEXT;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS reply_to_message_id BIGINT;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS edited_at           TIMESTAMPTZ;  -- tahrirlangan vaqt
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS deleted_at          TIMESTAMPTZ;  -- o'chirilgan vaqt (tomb-stone)
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS ocr_text            TEXT;         -- rasmdan OCR matni
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS transcript          TEXT;         -- audiodan matn (Whisper)
+CREATE INDEX IF NOT EXISTS idx_posts_grouped ON posts (grouped_id) WHERE grouped_id IS NOT NULL;
+
+-- Media fayllar metadata
+CREATE TABLE IF NOT EXISTS media (
+    id              BIGSERIAL PRIMARY KEY,
+    post_id         BIGINT REFERENCES posts(id) ON DELETE CASCADE,
+    channel_id      INTEGER REFERENCES channels(id) ON DELETE CASCADE,
+    tg_message_id   BIGINT NOT NULL,
+    file_id         TEXT,
+    unique_file_id  TEXT,
+    media_type      TEXT,                                  -- photo | video | document | audio | voice ...
+    caption         TEXT,
+    ocr_text        TEXT,
+    transcript      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (channel_id, tg_message_id, unique_file_id)     -- takror media kiritilmaydi
+);
+CREATE INDEX IF NOT EXISTS idx_media_post ON media (post_id);
+
+-- Qayta ishlash bosqichlari jurnali (audit / monitoring)
+CREATE TABLE IF NOT EXISTS processing_logs (
+    id          BIGSERIAL PRIMARY KEY,
+    post_id     BIGINT,
+    channel_id  INTEGER,
+    stage       TEXT NOT NULL,       -- ingest | media | ocr | whisper | ai_analysis | backfill
+    status      TEXT NOT NULL,       -- started | success | error | skipped
+    error_msg   TEXT,
+    logged_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_proclog_stage ON processing_logs (stage, status);
+CREATE INDEX IF NOT EXISTS idx_proclog_logged ON processing_logs (logged_at DESC);
+
+-- Backfill kuzatuvi
+ALTER TABLE channels ADD COLUMN IF NOT EXISTS last_backfilled_at TIMESTAMPTZ;
