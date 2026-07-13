@@ -916,3 +916,201 @@ async def log_processing(
             status,
             error_msg,
         )
+
+
+# ============================================================
+#  v3.0 — Aqlli jadval, jim soatlar, dam olish, breaking, onboarding
+# ============================================================
+async def set_interval_minutes(user_id: int, minutes: int) -> None:
+    """Interval rejimini daqiqada saqlaydi (30/45 daq va h.k.)."""
+    hours = max(1, round(minutes / 60)) if minutes else 6
+    async with db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO schedules (user_id, mode, interval_hours, interval_minutes,
+                                   daily_times, is_active, updated_at)
+            VALUES ($1, 'interval', $2, $3, '{}', TRUE, now())
+            ON CONFLICT (user_id) DO UPDATE
+                SET mode = 'interval', interval_hours = EXCLUDED.interval_hours,
+                    interval_minutes = EXCLUDED.interval_minutes,
+                    is_active = TRUE, updated_at = now()
+            """,
+            user_id, hours, minutes,
+        )
+
+
+async def set_smart_mode(user_id: int, enabled: bool, min_stories: int | None = None) -> None:
+    async with db.acquire() as conn:
+        if min_stories is None:
+            await conn.execute(
+                """INSERT INTO schedules (user_id, smart_mode, updated_at)
+                   VALUES ($1, $2, now())
+                   ON CONFLICT (user_id) DO UPDATE
+                       SET smart_mode = EXCLUDED.smart_mode, updated_at = now()""",
+                user_id, enabled,
+            )
+        else:
+            await conn.execute(
+                """INSERT INTO schedules (user_id, smart_mode, smart_min_stories, updated_at)
+                   VALUES ($1, $2, $3, now())
+                   ON CONFLICT (user_id) DO UPDATE
+                       SET smart_mode = EXCLUDED.smart_mode,
+                           smart_min_stories = EXCLUDED.smart_min_stories,
+                           updated_at = now()""",
+                user_id, enabled, max(1, min(50, min_stories)),
+            )
+
+
+async def set_skip_empty(user_id: int, enabled: bool) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO schedules (user_id, skip_empty, updated_at)
+               VALUES ($1, $2, now())
+               ON CONFLICT (user_id) DO UPDATE
+                   SET skip_empty = EXCLUDED.skip_empty, updated_at = now()""",
+            user_id, enabled,
+        )
+
+
+async def set_breaking_enabled(user_id: int, enabled: bool) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO schedules (user_id, breaking_enabled, updated_at)
+               VALUES ($1, $2, now())
+               ON CONFLICT (user_id) DO UPDATE
+                   SET breaking_enabled = EXCLUDED.breaking_enabled, updated_at = now()""",
+            user_id, enabled,
+        )
+
+
+async def set_quiet(user_id: int, enabled: bool, start: str | None = None, end: str | None = None) -> None:
+    async with db.acquire() as conn:
+        if start is not None and end is not None:
+            await conn.execute(
+                """INSERT INTO schedules (user_id, quiet_enabled, quiet_start, quiet_end, updated_at)
+                   VALUES ($1, $2, $3, $4, now())
+                   ON CONFLICT (user_id) DO UPDATE
+                       SET quiet_enabled = EXCLUDED.quiet_enabled,
+                           quiet_start = EXCLUDED.quiet_start,
+                           quiet_end = EXCLUDED.quiet_end, updated_at = now()""",
+                user_id, enabled, start, end,
+            )
+        else:
+            await conn.execute(
+                """INSERT INTO schedules (user_id, quiet_enabled, updated_at)
+                   VALUES ($1, $2, now())
+                   ON CONFLICT (user_id) DO UPDATE
+                       SET quiet_enabled = EXCLUDED.quiet_enabled, updated_at = now()""",
+                user_id, enabled,
+            )
+
+
+async def set_weekend_schedule(
+    user_id: int,
+    enabled: bool,
+    mode: str = "interval",
+    interval_minutes: int | None = None,
+    times: list[str] | None = None,
+) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO schedules (user_id, weekend_enabled, weekend_mode,
+                                     weekend_interval_minutes, weekend_daily_times, updated_at)
+               VALUES ($1, $2, $3, $4, $5, now())
+               ON CONFLICT (user_id) DO UPDATE
+                   SET weekend_enabled = EXCLUDED.weekend_enabled,
+                       weekend_mode = EXCLUDED.weekend_mode,
+                       weekend_interval_minutes = EXCLUDED.weekend_interval_minutes,
+                       weekend_daily_times = EXCLUDED.weekend_daily_times,
+                       updated_at = now()""",
+            user_id, enabled, mode, interval_minutes, times or [],
+        )
+
+
+async def set_onboarded(user_id: int, value: bool = True) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET onboarded = $2 WHERE id = $1", user_id, value
+        )
+
+
+async def touch_manual_digest(user_id: int) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET last_manual_digest_at = now() WHERE id = $1", user_id
+        )
+
+
+async def get_channel_card(user_id: int, channel_id: int):
+    """Kanal kartochkasi: sarlavha, @username, post soni, oxirgi post, sog'liq."""
+    async with db.acquire() as conn:
+        return await conn.fetchrow(
+            """SELECT c.id, c.title, c.username, c.health_status, c.last_checked_at,
+                      count(p.id) AS post_count, max(p.posted_at) AS last_post_at
+               FROM channels c
+               JOIN subscriptions s ON s.channel_id = c.id AND s.user_id = $2
+               LEFT JOIN posts p ON p.channel_id = c.id
+               WHERE c.id = $1
+               GROUP BY c.id""",
+            channel_id, user_id,
+        )
+
+
+async def count_important_stories_for_user(
+    user_id: int, since, until, min_importance: int = 3
+) -> int:
+    """Aqlli rejim uchun: foydalanuvchi filtrlariga mos, muhim storylar soni."""
+    async with db.acquire() as conn:
+        return await conn.fetchval(
+            """SELECT count(DISTINCT st.id)
+               FROM stories st
+               JOIN posts p ON p.story_id = st.id
+               JOIN subscriptions s ON s.channel_id = p.channel_id
+               JOIN users u ON u.id = s.user_id
+               WHERE s.user_id = $1
+                 AND p.posted_at <= $3
+                 AND ($2::timestamptz IS NULL OR p.posted_at > $2)
+                 AND st.importance >= GREATEST($4, u.importance_min)
+                 AND (cardinality(u.interests) = 0 OR st.category = ANY(u.interests))""",
+            user_id, since, until, min_importance,
+        ) or 0
+
+
+async def get_breaking_candidates(within_minutes: int = 60, min_importance: int = 5):
+    """
+    Hali yuborilmagan shoshilinch storylar + ularni oladigan foydalanuvchilar.
+    Foydalanuvchi filtrlarga (qiziqish, ban, breaking yoqilgan) mos bo'lishi shart.
+    """
+    async with db.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT DISTINCT st.id AS story_id, st.summary, st.category,
+                            st.importance, s.user_id
+            FROM stories st
+            JOIN posts p ON p.story_id = st.id
+            JOIN subscriptions s ON s.channel_id = p.channel_id
+            JOIN users u ON u.id = s.user_id
+            JOIN schedules sc ON sc.user_id = s.user_id
+            WHERE st.importance >= $2
+              AND st.created_at >= now() - ($1 || ' minutes')::interval
+              AND u.is_banned = FALSE
+              AND sc.is_active = TRUE
+              AND sc.breaking_enabled = TRUE
+              AND (cardinality(u.interests) = 0 OR st.category = ANY(u.interests))
+              AND NOT EXISTS (
+                  SELECT 1 FROM breaking_deliveries bd
+                  WHERE bd.user_id = s.user_id AND bd.story_id = st.id
+              )
+            ORDER BY st.id
+            """,
+            str(within_minutes), min_importance,
+        )
+
+
+async def mark_breaking_delivered(user_id: int, story_id: int) -> None:
+    async with db.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO breaking_deliveries (user_id, story_id)
+               VALUES ($1, $2) ON CONFLICT DO NOTHING""",
+            user_id, story_id,
+        )
