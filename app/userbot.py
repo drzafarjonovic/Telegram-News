@@ -236,34 +236,12 @@ class Userbot:
             return 0
 
     async def _backfill_channel(self, ch, limit: int) -> int:
-        """
-        Kanaldagi oxirgi saqlangan xabardan keyingi (yangi) postlarni oladi.
-
-        Ikki rejim:
-          • Yangi kanal (last_id == 0) — butun tarixni emas, faqat eng so'nggi
-            `limit` ta postni olamiz (tez va arzon).
-          • Mavjud kanal (last_id > 0) — last_id dan keyingi BARCHA yangi postlar
-            `reverse=True` bilan ESKIDAN-YANGIGA olinadi. Telethon o'zi sahifalaydi,
-            shuning uchun `limit` cheklovi YO'Q — juda faol kanalda ham (bir sikl
-            oralig'ida `limit` dan ko'p post kelsa) BO'SHLIQ QOLMAYDI.
-            (Eski bug: `limit` bilan cheklangani uchun oradagilar tushib qolardi.)
-        """
+        """Kanaldagi oxirgi saqlangan xabardan keyingi (yangi) postlarni oladi."""
         last_id = await repo.get_max_message_id(ch["id"]) or 0
         ident = ch["username"] or ch["tg_channel_id"]
         count = 0
-
-        if last_id <= 0:
-            # Yangi kanal — eng so'nggi `limit` ta post (yangidan eskiga).
-            iterator = self.client.iter_messages(ident, limit=limit)
-        else:
-            # Mavjud kanal — bo'shliqni to'liq to'ldiramiz (eskidan yangiga).
-            # 0 => cheksiz; aks holda xavfsizlik shifti (bir siklda maks).
-            cap = config.backfill_max_total or None
-            iterator = self.client.iter_messages(
-                ident, min_id=last_id, reverse=True, limit=cap
-            )
-
-        async for msg in iterator:
+        # min_id=last_id => faqat last_id dan katta (yangi) xabarlar; limit soni bilan cheklanadi
+        async for msg in self.client.iter_messages(ident, min_id=last_id, limit=limit):
             if not (msg.message or msg.media):
                 continue
             await self.pipeline.enqueue(

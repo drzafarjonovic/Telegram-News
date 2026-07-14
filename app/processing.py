@@ -57,15 +57,7 @@ async def process_new_posts(analyzer) -> int:
 
     processed = 0
     for post in posts:
-        text = (post["text"] or "").strip()
-
-        # 0) Matn umuman yo'q (captionsiz media + OCR/STT o'chiq yoki muvaffaqiyatsiz).
-        #    Story yaratmasdan "qayta ishlangan" deb belgilaymiz (qayta skaner qilinmasin).
-        if not text:
-            await repo.mark_post_processed(post["id"], None)
-            processed += 1
-            continue
-
+        text = post["text"] or ""
         tokens = sim.tokenize(text)
 
         # 1) Dublikat tekshiruvi

@@ -22,8 +22,8 @@ python-dotenv==1.0.1
 # ---------- Enterprise v2.0 (IXTIYORIY) ----------
 # OCR (rasmdan matn) — faqat OCR_ENABLED=true bo'lsa kerak.
 # Tizimda `tesseract-ocr` ham o'rnatilgan bo'lishi lozim (Dockerfile'da bor).
-pytesseract==0.3.13
-Pillow==10.4.0
+# pytesseract==0.3.13
+# Pillow==10.4.0
 #
 # Speech-to-Text (Whisper) uchun alohida kutubxona shart emas —
 # mavjud `openai` SDK ishlatiladi (STT_ENABLED=true + STT_API_KEY).

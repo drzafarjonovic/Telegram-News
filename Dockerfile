@@ -7,9 +7,7 @@ FROM python:3.11-slim
 # OCR uchun tesseract (IXTIYORIY — faqat OCR_ENABLED=true bo'lsa kerak).
 # Kerak bo'lmasa, xarajatni kamaytirish uchun bu qatorni olib tashlashingiz mumkin.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        tesseract-ocr tesseract-ocr-eng tesseract-ocr-rus \
-        tesseract-ocr-uzb tesseract-ocr-uzb-cyrl \
-        ffmpeg \
+        tesseract-ocr tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
