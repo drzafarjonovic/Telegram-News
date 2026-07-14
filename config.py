@@ -113,7 +113,7 @@ class Config:
     store_raw: bool = os.getenv("STORE_RAW_MESSAGES", "true").strip().lower() in ("1", "true", "yes", "on")
 
     # ---- Enterprise v2.0: backfill (GetHistory, bo'shliqlarni to'ldirish) ----
-    backfill_enabled: bool = os.getenv("BACKFILL_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+    backfill_enabled: bool = os.getenv("BACKFILL_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
     backfill_limit: int = _get_int("BACKFILL_LIMIT", 100)
     backfill_interval_min: int = _get_int("BACKFILL_INTERVAL_MIN", 60)
 

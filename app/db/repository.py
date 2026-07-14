@@ -1117,6 +1117,7 @@ async def get_breaking_candidates(within_minutes: int = 60, min_importance: int 
             JOIN schedules sc ON sc.user_id = s.user_id
             WHERE st.importance >= $2
               AND st.created_at >= now() - ($1 || ' minutes')::interval
+              AND p.posted_at >= now() - interval '6 hours'
               AND u.is_banned = FALSE
               AND sc.is_active = TRUE
               AND sc.breaking_enabled = TRUE
