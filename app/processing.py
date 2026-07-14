@@ -38,6 +38,19 @@ def _find_similar_story(post_tokens: set[str], recent_stories: list[dict]) -> in
     return best_id
 
 
+def _combined_text(post) -> str:
+    """Matn + OCR (rasm) + transkript (audio) ni bitta tahlil matniga birlashtiradi.
+
+    Shu tufayli izohsiz (faqat rasm/ovozli) postlar ham AI tahliliga tushadi.
+    """
+    parts: list[str] = []
+    for key in ("text", "ocr_text", "transcript"):
+        val = post[key]
+        if val and val.strip():
+            parts.append(val.strip())
+    return "\n\n".join(parts)
+
+
 async def process_new_posts(analyzer) -> int:
     """
     Yangi postlarni qayta ishlaydi. Qayta ishlangan postlar sonini qaytaradi.
@@ -57,7 +70,7 @@ async def process_new_posts(analyzer) -> int:
 
     processed = 0
     for post in posts:
-        text = post["text"] or ""
+        text = _combined_text(post)
         tokens = sim.tokenize(text)
 
         # 1) Dublikat tekshiruvi

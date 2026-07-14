@@ -531,13 +531,17 @@ async def get_stats() -> dict[str, Any]:
 #  FAZA 1 — STORIES (cache pipeline) & DEDUP
 # ============================================================
 async def get_unprocessed_posts(limit: int = 25):
-    """Hali tahlil qilinmagan, matnli postlar (eng eskisidan)."""
+    """Hali tahlil qilinmagan postlar (matn, OCR yoki audio-transkript bo'lsa)."""
     async with db.acquire() as conn:
         return await conn.fetch(
-            """SELECT id, channel_id, text, posted_at
+            """SELECT id, channel_id, text, ocr_text, transcript, posted_at
                FROM posts
                WHERE processed = FALSE
-                 AND text IS NOT NULL AND length(trim(text)) > 0
+                 AND (
+                       (text IS NOT NULL AND length(trim(text)) > 0)
+                    OR (ocr_text IS NOT NULL AND length(trim(ocr_text)) > 0)
+                    OR (transcript IS NOT NULL AND length(trim(transcript)) > 0)
+                 )
                ORDER BY posted_at
                LIMIT $1""",
             limit,

@@ -35,9 +35,10 @@ def _get_id_list(name: str) -> list[int]:
 
 # Har bir provayder uchun standart model
 DEFAULT_MODELS = {
-    "groq": "llama-3.1-8b-instant",
+    "groq": "llama-3.1-8b-instant",  # ESLATMA: 2026-08-16 dan keyin "openai/gpt-oss-20b" ga o'ting (eski model o'chadi)
     "openai": "gpt-4o-mini",
     "gemini": "gemini-1.5-flash",
+    "cerebras": "gpt-oss-120b",  # bepul ~1M token/kun; xohlasangiz .env: AI_MODEL=qwen-3-235b-a22b-instruct-2507
 }
 
 # Har bir provayder uchun OpenAI-compatible bazaviy URL
@@ -45,6 +46,7 @@ BASE_URLS = {
     "groq": "https://api.groq.com/openai/v1",
     "openai": None,  # OpenAI standart URL (rasmiy SDK default)
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    "cerebras": "https://api.cerebras.ai/v1",
 }
 
 
@@ -91,6 +93,7 @@ class Config:
     groq_api_key: str = os.getenv("GROQ_API_KEY", "")
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    cerebras_api_key: str = os.getenv("CEREBRAS_API_KEY", "")
 
     # Tahlil
     analysis_language: str = os.getenv("ANALYSIS_LANGUAGE", "uz").strip().lower()
@@ -161,6 +164,7 @@ class Config:
             "groq": self.groq_api_key,
             "gemini": self.gemini_api_key,
             "openai": self.openai_api_key,
+            "cerebras": self.cerebras_api_key,
         }.get(name, "")
         keys = self._split_keys(specific)
         # Asosiy provayder uchun umumiy AI_API_KEY(lar) ham qo'shiladi

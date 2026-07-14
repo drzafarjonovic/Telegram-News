@@ -152,8 +152,16 @@ class AIAnalyzer:
         return "\n".join(lines)
 
     def _order(self) -> list[int]:
-        """Joriy round-robin ko'rsatkichidan boshlab kalit indekslari."""
+        """Kalit indekslari tartibi.
+
+        • priority — FAILOVER: har doim 1-kalitdan (asosiy provayder) boshlanadi;
+          faqat u limit/xato bersa keyingisiga (zaxira) o'tadi. Shu tufayli deyarli
+          BARCHA yangiliklar bir xil (eng aqlli) model bilan tahlil qilinadi.
+        • mixed — round-robin: yuk barcha kalitlarga teng taqsimlanadi.
+        """
         n = len(self.pool)
+        if config.ai_pool_mode == "priority":
+            return list(range(n))
         return [(self._rr + i) % n for i in range(n)]
 
     async def _chat(self, messages: list[dict], user_id: Optional[int] = None, **kwargs):
@@ -165,8 +173,10 @@ class AIAnalyzer:
             return None
 
         order = self._order()
-        # Keyingi chaqiruv navbatdagi kalitdan boshlanadi (teng taqsimot)
-        self._rr = (self._rr + 1) % len(self.pool)
+        # mixed rejimda keyingi chaqiruv navbatdagi kalitdan boshlanadi (teng taqsimot).
+        # priority rejimda ko'rsatkich siljimaydi — doim asosiy (eng aqlli) kalit birinchi.
+        if config.ai_pool_mode != "priority":
+            self._rr = (self._rr + 1) % len(self.pool)
 
         last_error: Optional[Exception] = None
         # 1-o'tish: faqat dam olmayotgan kalitlar. 2-o'tish: oxirgi chora sifatida hammasi.
@@ -279,7 +289,8 @@ class AIAnalyzer:
             ],
             user_id=user_id,
             temperature=0.2,
-            max_tokens=400,
+            max_tokens=600,
+            response_format={"type": "json_object"},
         )
         if result is None:
             return None
