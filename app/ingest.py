@@ -176,7 +176,9 @@ class IngestPipeline:
             logger.debug("media metadata saqlanmadi: %s", exc)
 
         need_ocr = config.ocr_enabled and media_type == "photo"
-        need_stt = config.stt_enabled and media_type in ("voice", "audio")
+        need_stt = config.stt_enabled and media_type in (
+            "voice", "audio", "video", "video_note", "gif",
+        )
         if not (need_ocr or need_stt):
             return
 
@@ -196,7 +198,8 @@ class IngestPipeline:
 
         if need_stt:
             try:
-                txt = await media.run_transcription(data)
+                fname = "audio.ogg" if media_type in ("voice", "audio") else "video.mp4"
+                txt = await media.run_transcription(data, filename=fname)
                 if txt:
                     await repo.append_post_text_extra(post_id, transcript=txt)
                     await repo.log_processing(post_id, job.db_channel_id, "whisper", "success")
